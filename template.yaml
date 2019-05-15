@@ -1,0 +1,434 @@
+Description: Nimble based low-latency autoscaling streaming architecture
+
+Parameters:
+  RtmpUser:
+    Description: Username for RTMP authentication
+    Type: String
+    Default: testuser
+  RtmpPassword:
+    Description: Password for RTMP authentication
+    Type: String
+    Default: changeme
+  ImageId:
+    Description: Image ID for base EC2 instance.
+    Type: AWS::EC2::Image::Id
+    Default: ami-0de53d8956e8dcf80
+  OriginInstanceType:
+    Description: Instance type of origin EC2 server
+    Type: String
+    Default: c5.large
+    AllowedValues: [c5.large, c5.xlarge, c5.2xlarge, c5.4xlarge ]
+  EdgeInstanceType:
+    Description: Instance type of edge EC2 servers
+    Type: String
+    Default: c5.large
+    AllowedValues: [c5.large, c5.xlarge, c5.2xlarge, c5.4xlarge ]
+  EdgeClusterMinSize:
+    Description: Min number of streaming edges
+    Type: Number
+    Default: 1
+  EdgeClusterMaxSize:
+    Description: Max number of streaming edges
+    Type: Number
+    Default: 10
+  EdgeClusterMaxAgvTraffic:
+    Description: Egress bandwidth threshold for edges (in Bytes per Minute) - scaling out will occur when this is reached
+    Type: Number
+    Default: 37500000000
+  EdgeClusterMaxAgvCPU:
+    Description: CPU threshold for edges (percent) - scaling out will occur when this is reached
+    Type: Number
+    Default: 70
+    
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.107.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value:  !Join ['', [!Ref "AWS::StackName", "-VPC" ]]
+   
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.107.10.0/24
+      MapPublicIpOnLaunch : true
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Public-A
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.107.20.0/24
+      MapPublicIpOnLaunch : true
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Public-B
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value:  !Sub ${AWS::StackName}-Public
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway  
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  OriginSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows rtmp connections to host
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 1935
+        ToPort: 1935
+        CidrIp: 0.0.0.0/0
+
+  EdgeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows websocket connections on port 8081
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 8081
+        ToPort: 8081
+        CidrIp: 0.0.0.0/0
+
+  Origin:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref OriginInstanceType
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref OriginSecurityGroup
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -x
+          mkdir /etc/yum.repos.d
+          cat > /etc/yum.repos.d/nimble.repo << _RepoConf_
+          [nimble] 
+          name= Nimble Streamer repository 
+          baseurl=http://nimblestreamer.com/centos/7/\$basearch
+          enabled=1 
+          gpgcheck=1 
+          gpgkey=http://nimblestreamer.com/gpg.key
+          _RepoConf_
+          yum makecache
+          yum -y install nimble
+          echo "{\"SyncResponse\":{\"status\":\"success\",\"StreamCheckerMode\":false,\"UniqueVisitors\":false,\"RoutesHash\":\"\",\"Routes\":[],\"IpRanges\":[],\"ServerAuthorizationProperties\":{\"ServerAuthPropertiesHash\":\"\"},\"CamerasHash\":\"\",\"Cameras\":[],\"StreamsHash\":\"\",\"Streams\":[],\"RtmpSettings\":{\"hash\":\"1557559760952\",\"interfaces\":[{\"ip\":\"0.0.0.0\",\"port\":1935,\"ssl\":false}],\"login\":\"\",\"password\":\"\",\"duration\":6,\"chunk_count\":4,\"dash_template\":\"TIME\",\"protocols\":[\"RTMP\"],\"apps\":[{\"app\":\"live\",\"login\":\"${RtmpUser}\",\"password\":\"${RtmpPassword}\",\"duration\":6,\"chunk_count\":4,\"dash_template\":\"TIME\",\"protocols\":[\"RTMP\"]}],\"abr\":[]},\"RtspSettings\":{\"hash\":\"\",\"interfaces\":[]},\"IcecastSettings\":{\"hash\":\"\",\"interfaces\":[]},\"LivePullSettings\":{\"hash\":\"0\",\"streams\":[]},\"RtmpPublishSettings\":{\"hash\":\"\",\"settings\":[]},\"RtspPublishSettings\":{\"hash\":\"\",\"settings\":[]},\"ManagedTasks\": {\"hash\":\"0\", \"tasks\": []},\"HlsDRMSettings\": {\"hash\":\"0\", \"url\":\"\", \"key\":\"\", \"KeyServerSettings\": {}},\"HttpOriginApps\":{\"hash\":\"0\",\"apps\":[]},\"Aliases\":{\"hash\":\"0\",\"settings\":[]},\"DataSlicesInfo\":{\"hash\":\"1\",\"data_slices\":[{\"id\":\"43905\",\"tz\":0}]},\"UDPSenderSettings\":{\"hash\":\"0\",\"settings\":[]},\"PayPerPublishSettings\":{\"hash\":\"0\",\"url\":\"\",\"auth_group_interval\":500,\"apps\":[]},\"DvrSettings\":{\"hash\":\"0\",\"settings\":[]},\"UserAgentGroupSettings\":{\"hash\":\"0\",\"settings\":[]},\"RefererGroupSettings\":{\"hash\":\"0\",\"settings\":[]},\"VideoEncodersInfo\":{\"hash\":\"0\",\"encoders\":[]},\"AudioEncodersInfo\":{\"hash\":\"0\",\"encoders\":[]},\"StreamOverrideSettings\":{\"hash\":\"0\",\"settings\":[]},\"IcecastStreamSettings\": {\"hash\":\"0\",\"settings\": []},\"AuthHandlerSettings\":{\"hash\":\"\"},\"ServerSettings\":{\"MaxCacheSize\":64,\"MaxFileCacheSize\":4096,\"LogMode\":\"info\"}}}" >> /etc/nimble/rules.conf
+          service nimble start
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Sub "${AWS::StackName}-Origin"
+
+  AMICreate:
+    Type: AWS::CloudFormation::WaitCondition
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref EdgeInstanceType
+      SubnetId: !Ref PublicSubnetA
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -x
+          mkdir /etc/yum.repos.d
+          cat > /etc/yum.repos.d/nimble.repo << _RepoConf_
+          [nimble] 
+          name= Nimble Streamer repository 
+          baseurl=http://nimblestreamer.com/centos/7/\$basearch
+          enabled=1 
+          gpgcheck=1 
+          gpgkey=http://nimblestreamer.com/gpg.key
+          _RepoConf_
+          yum makecache
+          yum -y install nimble
+          echo "{\"SyncResponse\":{\"status\":\"success\",\"StreamCheckerMode\":false,\"UniqueVisitors\":false,\"RoutesHash\":\"\",\"Routes\":[],\"IpRanges\":[],\"ServerAuthorizationProperties\":{\"ServerAuthPropertiesHash\":\"\"},\"CamerasHash\":\"\",\"Cameras\":[],\"StreamsHash\":\"\",\"Streams\":[],\"RtmpSettings\":{\"hash\":\"1557564455802\",\"interfaces\":[],\"login\":\"\",\"password\":\"\",\"duration\":6,\"chunk_count\":4,\"dash_template\":\"TIME\",\"protocols\":[\"SLDP\"],\"apps\":[{\"app\":\"live\",\"login\":\"\",\"password\":\"\",\"duration\":6,\"chunk_count\":4,\"dash_template\":\"TIME\",\"protocols\":[\"SLDP\"]}],\"abr\":[]},\"RtspSettings\":{\"hash\":\"\",\"interfaces\":[]},\"IcecastSettings\":{\"hash\":\"\",\"interfaces\":[]},\"LivePullSettings\":{\"hash\":\"1557564586920\",\"streams\":[{\"id\":\"5cd68a19796db46f790c31a0_1557564477304\",\"app\":\"live\",\"stream\":\"stream1\",\"urls\":[\"rtmp://${Origin.PrivateIp}/live/stream1\"],\"protocol\":\"RTMP\",\"duration\":0,\"transmux\":[],\"RtspSettings\":{\"mode\":\"TCP_UDP\",\"http_proxy\":\"\"}},{\"id\":\"5cd68c9445475e76d0f57799\",\"app\":\"live\",\"stream\":\"stream2\",\"urls\":[\"${Origin.PrivateIp}/live/stream2\"],\"protocol\":\"RTMP\",\"duration\":0,\"transmux\":[],\"RtspSettings\":{\"mode\":\"TCP_UDP\",\"http_proxy\":\"\"}},{\"id\":\"5cd68caa796db46f790c31ac\",\"app\":\"live\",\"stream\":\"stream3\",\"urls\":[\"rtmp://${Origin.PrivateIp}/live/stream3\"],\"protocol\":\"RTMP\",\"duration\":0,\"transmux\":[],\"RtspSettings\":{\"mode\":\"TCP_UDP\",\"http_proxy\":\"\"}}]},\"RtmpPublishSettings\":{\"hash\":\"\",\"settings\":[]},\"RtspPublishSettings\":{\"hash\":\"\",\"settings\":[]},\"ManagedTasks\": {\"hash\":\"0\", \"tasks\": []},\"HlsDRMSettings\": {\"hash\":\"0\", \"url\":\"\", \"key\":\"\", \"KeyServerSettings\": {}},\"HttpOriginApps\":{\"hash\":\"0\",\"apps\":[]},\"Aliases\":{\"hash\":\"0\",\"settings\":[]},\"DataSlicesInfo\":{\"hash\":\"1\",\"data_slices\":[{\"id\":\"43905\",\"tz\":0}]},\"UDPSenderSettings\":{\"hash\":\"0\",\"settings\":[]},\"PayPerPublishSettings\":{\"hash\":\"0\",\"url\":\"\",\"auth_group_interval\":500,\"apps\":[]},\"DvrSettings\":{\"hash\":\"0\",\"settings\":[]},\"UserAgentGroupSettings\":{\"hash\":\"0\",\"settings\":[]},\"RefererGroupSettings\":{\"hash\":\"0\",\"settings\":[]},\"VideoEncodersInfo\":{\"hash\":\"0\",\"encoders\":[]},\"AudioEncodersInfo\":{\"hash\":\"0\",\"encoders\":[]},\"StreamOverrideSettings\":{\"hash\":\"0\",\"settings\":[]},\"IcecastStreamSettings\": {\"hash\":\"0\",\"settings\": []},\"AuthHandlerSettings\":{\"hash\":\"\"},\"ServerSettings\":{\"MaxCacheSize\":64,\"MaxFileCacheSize\":4096,\"LogMode\":\"info\"}}}" >> /etc/nimble/rules.conf
+          service nimble start
+          /opt/aws/bin/cfn-signal \
+            -e $? \
+            --stack ${AWS::StackName} \
+            --region ${AWS::Region} \
+            --resource AMICreate
+          shutdown -h now
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Sub "${AWS::StackName}-EdgeAmiModel"
+
+  AMI:
+    Type: Custom::AMI
+    DependsOn: AMICreate
+    Properties:
+      ServiceToken: !GetAtt AMIFunction.Arn
+      InstanceId: !Ref Instance
+  AMIFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub |
+          var response = require('cfn-response');
+          var AWS = require('aws-sdk');
+          exports.handler = function(event, context) {
+            console.log("Request received:\n", JSON.stringify(event));
+            var physicalId = event.PhysicalResourceId;
+            function success(data) {
+              return response.send(event, context, response.SUCCESS, data, physicalId);
+            }
+            function failed(e) {
+              return response.send(event, context, response.FAILED, e, physicalId);
+            }
+            function wait(waiter) {
+              console.log("Waiting: ", JSON.stringify(waiter));
+              event.waiter = waiter;
+              event.PhysicalResourceId = physicalId;
+              var request = ec2.waitFor(waiter.state, waiter.params);
+              setTimeout(()=>{
+                request.abort();
+                console.log("Timeout reached, continuing function. Params:\n", JSON.stringify(event));
+                var lambda = new AWS.Lambda();
+                lambda.invoke({
+                  FunctionName: context.invokedFunctionArn,
+                  InvocationType: 'Event',
+                  Payload: JSON.stringify(event)
+                }).promise().then((data)=>context.done()).catch((err)=>context.fail(err));
+              }, context.getRemainingTimeInMillis() - 5000);
+              return request.promise().catch((err)=>
+                (err.code == 'RequestAbortedError') ?
+                  new Promise(()=>context.done()) :
+                  Promise.reject(err)
+              );
+            }
+            var ec2 = new AWS.EC2(),
+                instanceId = event.ResourceProperties.InstanceId;
+            if (event.waiter) {
+              wait(event.waiter).then((data)=>success({})).catch((err)=>failed(err));
+            } else if (event.RequestType == 'Create' || event.RequestType == 'Update') {
+              if (!instanceId) { failed('InstanceID required'); }
+              ec2.waitFor('instanceStopped', {InstanceIds: [instanceId]}).promise()
+              .then((data)=>
+                ec2.createImage({
+                  InstanceId: instanceId,
+                  Name: event.RequestId
+                }).promise()
+              ).then((data)=>
+                wait({
+                  state: 'imageAvailable',
+                  params: {ImageIds: [physicalId = data.ImageId]}
+                })
+              ).then((data)=>success({})).catch((err)=>failed(err));
+            } else if (event.RequestType == 'Delete') {
+              if (physicalId.indexOf('ami-') !== 0) { return success({});}
+              ec2.describeImages({ImageIds: [physicalId]}).promise()
+              .then((data)=>
+                (data.Images.length == 0) ? success({}) :
+                ec2.deregisterImage({ImageId: physicalId}).promise()
+              ).then((data)=>
+                ec2.describeSnapshots({Filters: [{
+                  Name: 'description',
+                  Values: ["*" + physicalId + "*"]
+                }]}).promise()
+              ).then((data)=>
+                (data.Snapshots.length === 0) ? success({}) :
+                ec2.deleteSnapshot({SnapshotId: data.Snapshots[0].SnapshotId}).promise()
+              ).then((data)=>success({})).catch((err)=>failed(err));
+            }
+          };
+      Runtime: nodejs8.10
+      Timeout: 300
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: {Service: [lambda.amazonaws.com]}
+          Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+      Policies:
+      - PolicyName: EC2Policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - 'ec2:DescribeInstances'
+              - 'ec2:DescribeImages'
+              - 'ec2:CreateImage'
+              - 'ec2:DeregisterImage'
+              - 'ec2:DescribeSnapshots'
+              - 'ec2:DeleteSnapshot'
+              Resource: ['*']
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-LB"
+      Scheme: internet-facing
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      Type: network
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-LB"
+  LoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-TG"
+      Port: 8081
+      Protocol: TCP
+      VpcId: !Ref VPC
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 60
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-TG"
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref LoadBalancerTargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: '8081'
+      Protocol: TCP
+
+  LaunchTemplate:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-LT"
+      LaunchTemplateData:
+        ImageId: !Ref AMI
+        InstanceType: !Ref EdgeInstanceType
+        SecurityGroupIds: 
+          - !Ref EdgeSecurityGroup
+  AutoScalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    DependsOn: "LaunchTemplate"
+    Properties:
+      MinSize: !Ref EdgeClusterMinSize
+      MaxSize: !Ref EdgeClusterMaxSize
+      DesiredCapacity: !Ref EdgeClusterMinSize
+      LaunchTemplate:
+        LaunchTemplateId:
+          Ref: "LaunchTemplate"
+        Version:
+          Fn::GetAtt:
+            [ "LaunchTemplate", "LatestVersionNumber" ]
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      TargetGroupARNs:
+        [!Ref LoadBalancerTargetGroup]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-Edge-Cluster"
+          PropagateAtLaunch: "true"
+
+  TrafficScalePolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageNetworkOut
+        TargetValue: !Ref EdgeClusterMaxAgvTraffic
+
+  CpuScalePolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: !Ref EdgeClusterMaxAgvCPU
+  
+  CloudFrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt LoadBalancer.DNSName
+            Id: !Sub "${AWS::StackName}-CF-Origin"
+            CustomOriginConfig:
+              HTTPPort: '8081'
+              HTTPSPort: '443'
+              OriginProtocolPolicy: http-only
+        Enabled: 'true'
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          - OPTIONS
+          TargetOriginId: !Sub "${AWS::StackName}-CF-Origin"
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+            Headers:
+              - Origin
+              - Access-Control-Request-Method
+              - Access-Control-Request-Headers
+          ViewerProtocolPolicy: allow-all
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+Outputs:
+  IngressPoint:
+    Description: Publish to this address i.e. rtmp://{IngressPoint}/live/stream1
+    Value: !GetAtt Origin.PublicIp    
+  EgressPoint:
+    Description: Point your player to this address i.e. ws://{EgressPoint}/live/stream1
+    Value: !GetAtt CloudFrontDistribution.DomainName
