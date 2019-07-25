@@ -13,7 +13,7 @@
 ### Deploying the architecture
 1. Sign in to the [AWS Management Console](https://aws.amazon.com/console), then click the button below to launch the CloudFormation template. Alternatively you can [download](template.yaml) the template and adjust it to your needs.
 
-[![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?stackName=low-latency-streaming-architecture&templateURL=https://s3.amazonaws.com/lostshadow/low-latency-streaming-architecture/template.yaml)
+[![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?stackName=low-latency&templateURL=https://s3.amazonaws.com/lostshadow/low-latency-streaming-architecture/template.yaml)
 
 2. Adjust the parameters to fit your needs. Defaults are well suited for a production-grade architecture deployed in `us-east-1` (N.Virginia AWS region); see the notes below if you need to deploy to another region.  
 Make note of the RTMP credentials (`RtmpUser` and `RtmpPassword`) as you will need these to set up RTMP broadcasting.
@@ -29,20 +29,20 @@ Make note of the RTMP credentials (`RtmpUser` and `RtmpPassword`) as you will ne
 
 1. Point your RTMP broadcaster (any of [these](https://support.google.com/youtube/answer/2907883) will work) to the following URI:
 
-		rtmp://{EgressPoint}/live/stream1
-	...be sure to replace {EgressPoint} with the value output by CloudFormation above (step 6)
+		rtmp://{IngressPoint}/live/stream1
+	...be sure to replace {IngressPoint} with the value output by CloudFormation above (step 6)
 
 	Use the credentials provided above (step 2) for RTMP authentication (default `testuser`/`changeme`)
 
 	Note that, while some RTMP broadcasters require a simple URI, others (like [OBS Studio](https://obsproject.com)) require a **Server** and **Stream key**. In this case, split the URI above at the last *slash* character, as following:
 	
-	**Server**: `rtmp://{EgressPoint}/live`  
+	**Server**: `rtmp://{IngressPoint}/live`  
 	**Stream key**: `stream1`
 
 2. Open the SLDP test player [here](http://player.wmspanel.com/#player=sldp) and set it up with the following URI
 
-		ws://{EgressPoing}/live/stream1
-	...be sure to replace {IngressPoint} with the value output by CloudFormation above (step 6)
+		ws://{EgressPoint}/live/stream1
+	...be sure to replace {EgressPoint} with the value output by CloudFormation above (step 6)
 
 
 
